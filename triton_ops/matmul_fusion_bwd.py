@@ -136,7 +136,7 @@ def fused_matmul_backward(
 
     M, N = grad_out_.shape
     N, _ = weight.shape
-    
+
     # relu fusion fast path
     if activation_grad == 1:
         assert saved_act_y is not None
@@ -144,8 +144,13 @@ def fused_matmul_backward(
         saved_act_y_ = saved_act_y if saved_act_y.ndim == 2 else saved_act_y.flatten(0, 1)
         grad_in, grad_act = matmul_relu_fusion_backward(grad_out_, weight, saved_act_y_)
 
-        grad_weight = grad_act.transpose(1, 0) @ inputs_ if trainable_weight else None
-        grad_bias = torch.sum(grad_act, dim=0) if trainable_bias else None
+        if grad_act.size(1) == 2:
+            grad_act = grad_act.transpose(1, 0).contiguous() if trainable_weight or trainable_bias else None
+            grad_out_ = grad_act @ inputs_ if trainable_weight else None
+            grad_bias = torch.sum(grad_act, dim=1) if trainable_bias else None
+        else:
+            grad_weight = grad_act.transpose(1, 0) @ inputs_ if trainable_weight else None
+            grad_bias = torch.sum(grad_act, dim=0) if trainable_bias else None
         if bias_dtype is not None:
             grad_bias = grad_bias.to(bias_dtype)
         return grad_in.reshape_as(inputs), grad_weight, grad_bias
@@ -176,8 +181,13 @@ def fused_matmul_backward(
 
     # The following ops can also be handled by pytorch
     grad_in = triton.ops.matmul(grad_out_, weight)
-    grad_weight = grad_out_.transpose(1, 0) @ inputs_ if trainable_weight else None
-    grad_bias = torch.sum(grad_out_, dim=0) if trainable_bias else None
+    if grad_out_.size(1) == 2:
+        grad_out_ = grad_out_.transpose(1, 0).contiguous() if trainable_weight or trainable_bias else None
+        grad_weight = grad_out_ @ inputs_ if trainable_weight else None
+        grad_bias = torch.sum(grad_out_, dim=1) if trainable_bias else None
+    else:
+        grad_weight = grad_out_.transpose(1, 0) @ inputs_ if trainable_weight else None
+        grad_bias = torch.sum(grad_out_, dim=0) if trainable_bias else None
     if bias_dtype is not None:
         grad_bias = grad_bias.to(bias_dtype)
 
