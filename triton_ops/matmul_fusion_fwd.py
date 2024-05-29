@@ -98,7 +98,7 @@ def kernel_fma(
     BIAS: tl.constexpr,
     SAVE_ACT_INPUTS: tl.constexpr,
     ACTIVATION: tl.constexpr,
-    is_fp16: tl.constexpr,  # autotune
+    # is_fp16: tl.constexpr,  # autotune
 ):
     # fmt: on
 
@@ -151,12 +151,12 @@ def kernel_fma(
     # initialize and iteratively update accumulator
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
-    if BIAS:
-        if EVEN_N:
-            bias = tl.load(bias + rn).to(tl.float32)
-        else:
-            bias = tl.load(bias + rn, mask=rn < N, other=0.0).to(tl.float32)
-        acc += bias[None, :]
+    # if BIAS:
+    #     if EVEN_N:
+    #         bias = tl.load(bias + rn).to(tl.float32)
+    #     else:
+    #         bias = tl.load(bias + rn, mask=rn < N, other=0.0).to(tl.float32)
+    #     acc += bias[None, :]
 
     # block level matrix multiplication.
     # We fetch a block memory block from both inputs, matmul and accumulate, then repeat
@@ -170,13 +170,20 @@ def kernel_fma(
 
         acc += tl.dot(a, w)
 
+    if BIAS:
+        if EVEN_N:
+            bias = tl.load(bias + rn).to(tl.float32)
+        else:
+            bias = tl.load(bias + rn, mask=rn < N, other=0.0).to(tl.float32)
+        acc += bias[None, :]
+
     rm = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
     rn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
 
     # optional: save the activation inputs
     if SAVE_ACT_INPUTS:
         act_in_ptrs = ACT_INPUTS + rm[:, None] * stride_om + rn[None, :]
-        tl.store(act_in_ptrs, acc, mask=mask_rm[:, None] & mask_rn[None, :])
+        tl.store(act_in_ptrs, acc.to(ACT_INPUTS.dtype.element_ty), mask=mask_rm[:, None] & mask_rn[None, :])
 
     # optional: fused activation (while the data is in shared memory)
     if ACTIVATION == 1:
@@ -193,6 +200,7 @@ def kernel_fma(
         acc = star_relu(acc)
 
     # write back result
+    acc = acc.to(OUT.dtype.element_ty)
     out_ptrs = OUT + rm[:, None] * stride_om + rn[None, :]
     tl.store(out_ptrs, acc, mask=mask_rm[:, None] & mask_rn[None, :])
 
@@ -226,6 +234,7 @@ def fused_matmul(
 
     M, K = x_.shape
     N, K = weight.shape
+    assert x_.dtype == weight.dtype, "Input and weight must have the same dtype"
 
     outputs = torch.empty((M, N), device=x.device, dtype=x.dtype)
     act_inputs = torch.empty_like(outputs) if save_act_inputs else x  # will not be used in that case
@@ -244,7 +253,7 @@ def fused_matmul(
         BIAS=bias is not None,                      # optional fused bias
         GROUP_M=8,                                  # speed optimization: group the programs
         SAVE_ACT_INPUTS=save_act_inputs,
-        is_fp16=x_.dtype == torch.float16
+        # is_fp16=x_.dtype == torch.float16
     )
     # fmt: on
 

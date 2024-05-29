@@ -113,6 +113,7 @@ def fused_matmul_backward(
     trainable_weight: bool,
     trainable_bias: bool,
     activation_grad: int = 0,
+    bias_dtype: Optional[torch.dtype] = None,
 ):
     """
     Compute grad_in = activation^-1(grad_out) @ weight.transpose()
@@ -145,6 +146,8 @@ def fused_matmul_backward(
 
         grad_weight = grad_act.transpose(1, 0) @ inputs_ if trainable_weight else None
         grad_bias = torch.sum(grad_act, dim=0) if trainable_bias else None
+        if bias_dtype is not None:
+            grad_bias = grad_bias.to(bias_dtype)
         return grad_in.reshape_as(inputs), grad_weight, grad_bias
 
     # Compute the gradient for the activation
@@ -175,5 +178,7 @@ def fused_matmul_backward(
     grad_in = triton.ops.matmul(grad_out_, weight)
     grad_weight = grad_out_.transpose(1, 0) @ inputs_ if trainable_weight else None
     grad_bias = torch.sum(grad_out_, dim=0) if trainable_bias else None
+    if bias_dtype is not None:
+        grad_bias = grad_bias.to(bias_dtype)
 
     return grad_in.reshape_as(inputs), grad_weight, grad_bias

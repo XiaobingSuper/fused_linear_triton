@@ -18,7 +18,7 @@ from .matmul_fusion_fwd import fused_matmul
 
 class _fused_linear_triton(torch.autograd.Function):
     @staticmethod
-    @custom_fwd(cast_inputs=torch.bfloat16)
+    # @custom_fwd(cast_inputs=torch.bfloat16)
     def forward(
         ctx,
         x,
@@ -37,6 +37,7 @@ class _fused_linear_triton(torch.autograd.Function):
         ctx.activation = activation
         ctx.trainable_weight = trainable_weight
         ctx.trainable_bias = trainable_bias
+        ctx.bias_dtype = bias.dtype if bias is not None else None
 
         # Micro-optimization: saving these is not always needed (?)
         if x.requires_grad or ctx.trainable_weight or ctx.trainable_bias:
@@ -49,7 +50,7 @@ class _fused_linear_triton(torch.autograd.Function):
         return y
 
     @staticmethod
-    @custom_bwd
+    # @custom_bwd
     def backward(
         ctx: Any, grad_out: torch.Tensor
     ) -> Any:  # pragma: no cover  # this is covered, but called directly from C++
@@ -67,6 +68,7 @@ class _fused_linear_triton(torch.autograd.Function):
             trainable_weight=ctx.trainable_weight,
             trainable_bias=ctx.trainable_bias,
             activation_grad=ctx.activation,
+            bias_dtype = ctx.bias_dtype
         )
         return grad_input, grad_weight, grad_bias, None, None, None, None, None, None
 
@@ -111,9 +113,15 @@ class FusedLinear(nn.Module):
             torch.nn.init.uniform_(self.bias, -bound, bound)
 
     def forward(self, x):
+        weight = self.weight
+        if torch.is_autocast_enabled():
+            cast_dtype = torch.get_autocast_gpu_dtype()
+            x = x.to(cast_dtype)
+            weight = weight.to(cast_dtype)
+
         return _fused_linear_triton.apply(
             x,
-            self.weight,
+            weight,
             self.bias,
             self._activation_index,
             self.weight.requires_grad,
