@@ -146,7 +146,7 @@ def fused_matmul_backward(
 
         if grad_act.size(1) == 2:
             grad_act = grad_act.transpose(1, 0).contiguous() if trainable_weight or trainable_bias else None
-            grad_out_ = grad_act @ inputs_ if trainable_weight else None
+            grad_weight = grad_act @ inputs_ if trainable_weight else None
             grad_bias = torch.sum(grad_act, dim=1) if trainable_bias else None
         else:
             grad_weight = grad_act.transpose(1, 0) @ inputs_ if trainable_weight else None
