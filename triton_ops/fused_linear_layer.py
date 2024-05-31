@@ -18,7 +18,6 @@ from .matmul_fusion_fwd import fused_matmul
 
 class _fused_linear_triton(torch.autograd.Function):
     @staticmethod
-    # @custom_fwd(cast_inputs=torch.bfloat16)
     def forward(
         ctx,
         x,
@@ -50,7 +49,6 @@ class _fused_linear_triton(torch.autograd.Function):
         return y
 
     @staticmethod
-    # @custom_bwd
     def backward(
         ctx: Any, grad_out: torch.Tensor
     ) -> Any:  # pragma: no cover  # this is covered, but called directly from C++
@@ -118,7 +116,6 @@ class FusedLinear(nn.Module):
             cast_dtype = torch.get_autocast_gpu_dtype()
             x = x.to(cast_dtype)
             weight = weight.to(cast_dtype)
-
         return _fused_linear_triton.apply(
             x,
             weight,
