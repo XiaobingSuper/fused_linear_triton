@@ -33,7 +33,7 @@ class MLP(torch.nn.Module):
         super(MLP, self).__init__()
         self.linear_0 = triton_ops.FusedLinear(31, 64, bias=True, activation=triton_ops.Activation.ReLU)
         self.linear_1 = triton_ops.FusedLinear(64, 64, bias=True, activation=triton_ops.Activation.ReLU)
-        self.linear_2 = triton_ops.FusedLinear(64, 2, bias=True, activation=triton_ops.Activation.ReLU)
+        self.linear_2 = triton_ops.FusedLinear(64, 2, bias=True)
 
     def forward(self, x):
         x = self.linear_0(x)

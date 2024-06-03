@@ -104,6 +104,14 @@ def kernel_bw(
     tl.store(grad_act_ptrs, grad_act, mask=rn < N)
 
 
+@torch.compile
+def sum_reduce_dim0(x, dtype):
+    return torch.sum(x.to(dtype), dim=0)
+
+@torch.compile
+def sum_reduce_dim1(x, dtype):
+    return torch.sum(x.to(dtype), dim=1)
+
 def fused_matmul_backward(
     grad_out: torch.Tensor,
     inputs: torch.Tensor,
@@ -143,16 +151,17 @@ def fused_matmul_backward(
         assert saved_act_y.dtype == inputs.dtype
         saved_act_y_ = saved_act_y if saved_act_y.ndim == 2 else saved_act_y.flatten(0, 1)
         grad_in, grad_act = matmul_relu_fusion_backward(grad_out_, weight, saved_act_y_)
-
+        grad_bias = None
         if grad_act.size(1) == 2:
             grad_act = grad_act.transpose(1, 0).contiguous() if trainable_weight or trainable_bias else None
             grad_weight = grad_act @ inputs_ if trainable_weight else None
-            grad_bias = torch.sum(grad_act, dim=1) if trainable_bias else None
+            if trainable_bias:
+                grad_bias = sum_reduce_dim1(grad_act, bias_dtype) if bias_dtype != grad_act.dtype else torch.sum(grad_act, dim=1)
         else:
             grad_weight = grad_act.transpose(1, 0) @ inputs_ if trainable_weight else None
-            grad_bias = torch.sum(grad_act, dim=0) if trainable_bias else None
-        if bias_dtype is not None:
-            grad_bias = grad_bias.to(bias_dtype)
+            if trainable_bias:
+                grad_bias = sum_reduce_dim0(grad_act, bias_dtype) if bias_dtype != grad_act.dtype else torch.sum(grad_act, dim=0)
+
         return grad_in.reshape_as(inputs), grad_weight, grad_bias
 
     # Compute the gradient for the activation
@@ -174,21 +183,21 @@ def fused_matmul_backward(
             ACTIVATION_GRAD=activation_grad,        # optional fused activation
         )
         # fmt: on
-
         # Backpropagation going up, the reference gradient is now
         # just before the activation
         grad_out_ = grad_act
 
     # The following ops can also be handled by pytorch
     grad_in = triton.ops.matmul(grad_out_, weight)
+    grad_bias = None
     if grad_out_.size(1) == 2:
         grad_out_ = grad_out_.transpose(1, 0).contiguous() if trainable_weight or trainable_bias else None
         grad_weight = grad_out_ @ inputs_ if trainable_weight else None
-        grad_bias = torch.sum(grad_out_, dim=1) if trainable_bias else None
+        if trainable_bias:
+            grad_bias = sum_reduce_dim1(grad_out_, bias_dtype) if bias_dtype != grad_out_.dtype else torch.sum(grad_out_, dim=1)
     else:
         grad_weight = grad_out_.transpose(1, 0) @ inputs_ if trainable_weight else None
-        grad_bias = torch.sum(grad_out_, dim=0) if trainable_bias else None
-    if bias_dtype is not None:
-        grad_bias = grad_bias.to(bias_dtype)
+        if trainable_bias:
+            grad_bias = sum_reduce_dim0(grad_out_, bias_dtype) if bias_dtype != grad_out_.dtype else torch.sum(grad_out_, dim=0)
 
     return grad_in.reshape_as(inputs), grad_weight, grad_bias
