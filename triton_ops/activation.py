@@ -66,9 +66,11 @@ def relu(x):
 
 @triton.jit
 def relu_grad(x):
-    # x is out of forward of ReLU, the input real grad is grad_out * relu_grad(x)
+    # ReLU is different from other activations
+    # in that it does not require the input to retrospectively compute its gradient
+    # here the input is the downstream gradient, and we return the upstream gradient directly
+    return tl.where(x >= 0, 1.0, 0.0)
 
-    return tl.where(x > 0, 1.0, 0.0)
 
 
 @triton.jit

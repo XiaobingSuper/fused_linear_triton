@@ -36,13 +36,14 @@ def get_configs_io_bound():
                     num_warps = 2 if block_n <= 64 else 4
                     configs.append(
                         Config({'BLOCK_M': block_m, 'BLOCK_N': block_n, 'BLOCK_K': block_k, 'SPLIT_K': 1},
-                               num_stages=num_stages, num_warps=num_warps))
+                                      num_stages=num_stages, num_warps=num_warps))
                     # split_k
                     for split_k in [2, 4, 8, 16]:
-                        configs.append(
-                            Config({'BLOCK_M': block_m, 'BLOCK_N': block_n, 'BLOCK_K': block_k, 'SPLIT_K': split_k},
-                                   num_stages=num_stages, num_warps=num_warps, pre_hook=init_to_zero('C')))
+                        configs.append(Config({'BLOCK_M': block_m, 'BLOCK_N': block_n, 'BLOCK_K': block_k, 'SPLIT_K': split_k},
+                                                     num_stages=num_stages, num_warps=num_warps, pre_hook=init_to_zero('C')))
     return configs
+
+
 
 
 @autotune(
@@ -72,30 +73,30 @@ def get_configs_io_bound():
     prune_configs_by={
         'early_config_prune': early_config_prune,
         'perf_model': estimate_matmul_time,
-        'top_k': 10,
+        'top_k': 10
     },
 )
 @heuristics({
     'EVEN_K': lambda args: args['K'] % (args['BLOCK_K'] * args['SPLIT_K']) == 0,
 })
 @jit
-def _kernel(A, B, C, GRAD_ACT, SAVED_Y, M, N, K,  #
+def _kernel(A, B, C, 
+            GRAD_ACT, SAVED_Y,
+            M, N, K,  #
             stride_am, stride_ak,  #
             stride_bk, stride_bn,  #
             stride_cm, stride_cn,  #
-            stridegrad_act_m, stridegrad_act_k,  #
+            stride_grad_act_m, stridegrad_act_k,  #
             stride_saved_act_y_m, stride_saved_act_y_k,  #
-            dot_out_dtype: tl.constexpr,  #
-            allow_tf32: tl.constexpr,  #
-            fp8_fast_accum: tl.constexpr,  #
-            BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,  #
-            GROUP_M: tl.constexpr, SPLIT_K: tl.constexpr, EVEN_K: tl.constexpr, AB_DTYPE: tl.constexpr  #
+            BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+            GROUP_M: tl.constexpr, SPLIT_K: tl.constexpr, EVEN_K: tl.constexpr,
+            ACC_TYPE: tl.constexpr
             ):
     # matrix multiplication
     pid = tl.program_id(0)
     pid_z = tl.program_id(1)
-    grid_m = tl.cdiv(M, BLOCK_M)
-    grid_n = tl.cdiv(N, BLOCK_N)
+    grid_m = (M + BLOCK_M - 1) // BLOCK_M
+    grid_n = (N + BLOCK_N - 1) // BLOCK_N
     # re-order program ID for better L2 performance
     width = GROUP_M * grid_n
     group_id = pid // width
@@ -112,12 +113,12 @@ def _kernel(A, B, C, GRAD_ACT, SAVED_Y, M, N, K,  #
     A = A + (ram[:, None] * stride_am + rk[None, :] * stride_ak)
     B = B + (rk[:, None] * stride_bk + rbn[None, :] * stride_bn)
     
-    GRAD_ACT = GRAD_ACT + (ram[:, None] * stridegrad_act_m + rk[None, :] * stridegrad_act_k)
+    GRAD_ACT = GRAD_ACT + (ram[:, None] * stride_grad_act_m + rk[None, :] * stridegrad_act_k)
     SAVED_Y = SAVED_Y + (ram[:, None] * stride_saved_act_y_m + rk[None, :] * stride_saved_act_y_k)
     
-    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=dot_out_dtype)
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=ACC_TYPE)
 
-    for k in range(0, tl.cdiv(K, BLOCK_K * SPLIT_K)):
+    for k in range(K, 0, -BLOCK_K * SPLIT_K):
         if EVEN_K:
             a = tl.load(A)
             b = tl.load(B)
@@ -126,23 +127,14 @@ def _kernel(A, B, C, GRAD_ACT, SAVED_Y, M, N, K,  #
             grad_act = tl.where(saved_y > 0, a, tl.zeros_like(a))
             tl.store(GRAD_ACT, grad_act)
         else:
-            k_remaining = K - k * (BLOCK_K * SPLIT_K)
-            _0 = tl.zeros((1, 1), dtype=C.dtype.element_ty)
-            a = tl.load(A, mask=rk[None, :] < k_remaining, other=_0)
-            b = tl.load(B, mask=rk[:, None] < k_remaining, other=_0)
-            saved_y = tl.load(SAVED_Y, mask=rk[None, :] < k_remaining, other=_0)
+            a = tl.load(A, mask=rk[None, :] < k, other=0.)
+            b = tl.load(B, mask=rk[:, None] < k, other=0.)
+            saved_y = tl.load(SAVED_Y, mask=rk[None, :] < k, other=0.)
             # grad_act = a * relu_grad(saved_y)
             grad_act = tl.where(saved_y > 0, a, tl.zeros_like(a))
-            tl.store(GRAD_ACT, grad_act, mask=rk[None, :] < k_remaining)
-        
-        if AB_DTYPE:
-            # a = a.to(C.dtype.element_ty)
-            grad_act = grad_act.to(C.dtype.element_ty)
-            b = b.to(C.dtype.element_ty)
-        if fp8_fast_accum:
-            acc = tl.dot(grad_act, b, acc, out_dtype=dot_out_dtype, allow_tf32=allow_tf32)
-        else:
-            acc += tl.dot(grad_act, b, out_dtype=dot_out_dtype, allow_tf32=allow_tf32)
+        tl.store(GRAD_ACT, grad_act, mask=rk[None, :] < k)
+
+        acc += tl.dot(grad_act, b)
         A += BLOCK_K * SPLIT_K * stride_ak
         B += BLOCK_K * SPLIT_K * stride_bk
         GRAD_ACT += BLOCK_K * SPLIT_K * stridegrad_act_k
@@ -161,7 +153,7 @@ def _kernel(A, B, C, GRAD_ACT, SAVED_Y, M, N, K,  #
         tl.atomic_add(C, acc, mask=mask)
 
 
-def matmul_relu_fusion_backward(a, b, saved_act_y, dot_out_dtype=None, allow_tf32=True, fp8_fast_accum=True):
+def matmul_relu_fusion_backward(a, b, saved_act_y):
     device = a.device
     # handle non-contiguous inputs if necessary
     if a.stride(0) > 1 and a.stride(1) > 1:
@@ -173,37 +165,13 @@ def matmul_relu_fusion_backward(a, b, saved_act_y, dot_out_dtype=None, allow_tf3
     M, K = a.shape
     _, N = b.shape
     # allocates output
-    if a.dtype in [tl.float8e4nv, tl.float8e4b15, tl.float8e5] or\
-        b.dtype in [tl.float8e4nv, tl.float8e4b15, tl.float8e5]:
-        c_dtype = torch.float16
-    elif a.dtype in [torch.int8] or b.dtype in [torch.int8]:
-        c_dtype = torch.int32
-    else:
-        c_dtype = get_higher_dtype(a.dtype, b.dtype)
+
+    c_dtype = get_higher_dtype(a.dtype, b.dtype)
 
     c = torch.empty((M, N), device=device, dtype=c_dtype)
     grad_act = torch.empty_like(a)
     assert saved_act_y.dtype == a.dtype, "saved_act_y must have the same dtype as a"
-
-    if dot_out_dtype is None:
-        if c_dtype in [torch.float16, torch.float32, torch.bfloat16]:
-            dot_out_dtype = tl.float32
-        else:
-            dot_out_dtype = tl.int32
-    else:
-        assert isinstance(dot_out_dtype, torch.dtype), "dot_out_dtype must be a torch.dtype"
-        if dot_out_dtype == torch.float16:
-            dot_out_dtype = tl.float16
-        elif dot_out_dtype in [torch.float32, torch.bfloat16]:
-            dot_out_dtype = tl.float32
-        else:
-            dot_out_dtype = tl.int32
-
-    ab_dtype = True
-    if a.dtype in [tl.float8e4nv, tl.float8e5] and b.dtype in [tl.float8e4nv, tl.float8e5]:
-        ab_dtype = False
-    if a.dtype in [torch.int8] and b.dtype in [torch.int8]:
-        ab_dtype = False
+    ACC_TYPE = tl.float32 if a.dtype in [torch.float16, torch.bfloat16, torch.float32] else tl.int32
     # launch kernel
     grid = lambda META: (cdiv(M, META['BLOCK_M']) * cdiv(N, META['BLOCK_N']), META['SPLIT_K'])
     _kernel[grid](
@@ -211,11 +179,8 @@ def matmul_relu_fusion_backward(a, b, saved_act_y, dot_out_dtype=None, allow_tf3
         a.stride(0), a.stride(1),  #
         b.stride(0), b.stride(1),  #
         c.stride(0), c.stride(1),  #
-        grad_act.stride(0), grad_act.stride(1),  #
+        grad_act.stride(0), grad_act.stride(1), #
         saved_act_y.stride(0), saved_act_y.stride(1),  #
-        dot_out_dtype=dot_out_dtype,  #
-        allow_tf32=allow_tf32,  #
-        fp8_fast_accum=fp8_fast_accum,  #
-        GROUP_M=8, AB_DTYPE=ab_dtype)
+        GROUP_M=8, ACC_TYPE=ACC_TYPE)
     return c, grad_act
     
