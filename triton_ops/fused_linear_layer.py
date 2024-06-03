@@ -125,3 +125,7 @@ class FusedLinear(nn.Module):
             self.bias.requires_grad if self.bias is not None else False,
             self.training and x.requires_grad and self._activation_index > 1,
         )
+
+    def extra_repr(self) -> str:
+        return f'in_features={self.in_features}, out_features={self.out_features}, bias={self.bias is not None}'
+
