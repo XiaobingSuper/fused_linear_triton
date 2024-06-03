@@ -3,7 +3,6 @@ import torch
 import time
 import triton_ops
 
-from apex import fused_dense
 # self.geo_feat_dim 15 self.encoder_dir.n_output_dims 16 num_layers_reflectance 3 hidden_dim 64
 # intensity_net input_mat torch.Size([1048576, 31])
 # ray_drop_net input_mat torch.Size([1048576, 31])
@@ -11,7 +10,6 @@ geo_feat_dim = 15
 n_output_dims = 16
 num_layers_reflectance = 3
 hidden_dim = 64
-
 
 
 class MLP_Ref(torch.nn.Module):
