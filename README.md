@@ -1,6 +1,6 @@
-1. Prerequisites
+1. Prerequisites(optional if triton has been installed)
    ```
-   pip install triton==2.3.1
+   pip install triton==2.1.0
    ```
 2. install this package:
    ```
