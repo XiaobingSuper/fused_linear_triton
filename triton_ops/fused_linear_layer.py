@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import custom_bwd, custom_fwd
+import torch.nn.functional as F
 
 from .activation import Activation, get_triton_activation_index
 
@@ -116,15 +116,23 @@ class FusedLinear(nn.Module):
             cast_dtype = torch.get_autocast_gpu_dtype()
             x = x.to(cast_dtype)
             weight = weight.to(cast_dtype)
-        return _fused_linear_triton.apply(
-            x,
-            weight,
-            self.bias,
-            self._activation_index,
-            self.weight.requires_grad,
-            self.bias.requires_grad if self.bias is not None else False,
-            self.training and x.requires_grad and self._activation_index > 1,
-        )
+            return _fused_linear_triton.apply(
+                x,
+                weight,
+                self.bias,
+                self._activation_index,
+                self.weight.requires_grad,
+                self.bias.requires_grad if self.bias is not None else False,
+                self.training and x.requires_grad and self._activation_index > 1,
+            )
+        else:
+            out = F.linear(x, self.weight, self.bias)
+            if self._activation_index > 0 :
+                if self._activation_index == 1:
+                    out = out.relu_()
+                else:
+                    assert False, "only support relu activation now"
+            return out
 
     def extra_repr(self) -> str:
         return f'in_features={self.in_features}, out_features={self.out_features}, bias={self.bias is not None}'
