@@ -91,6 +91,8 @@ class FusedLinear(nn.Module):
         **_,
     ):
         super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
         self.weight = nn.Parameter(
             torch.empty(out_features, in_features), requires_grad=True
         )
